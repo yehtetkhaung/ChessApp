@@ -147,6 +147,8 @@ with col_board:
                 draggable: true,
                 position: '__FEN__',
                 orientation: '__ORIENTATION__',
+                pieceTheme: 'https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/img/chesspieces/wikipedia/{piece}.png',
+                onDragStart: onDragStart,
                 onDragStart: onDragStart,
                 onDrop: onDrop,
                 onSnapEnd: onSnapEnd
