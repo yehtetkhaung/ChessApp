@@ -42,7 +42,6 @@ if "move" in params:
             san = board.san(move)
             board.push(move)
             st.session_state.move_history.append(san)
-            # Clear query param to avoid duplicate move processing
             st.query_params.clear()
             st.rerun()
     except Exception:
@@ -102,11 +101,11 @@ st.title("♟️ Interactive Drag-and-Drop Chess AI")
 col_board, col_panel = st.columns([1.2, 1], gap="large")
 
 with col_board:
-    # Embed Chessboard.js & Chess.js via CDN for buttery-smooth drag-and-drop
     fen = board.fen()
     board_orientation = "white" if st.session_state.player_color == chess.WHITE else "black"
     
-    chessboard_html = f"""
+    # Use regular string with .replace() to avoid f-string curly brace collisions with JavaScript
+    chessboard_html = """
     <!DOCTYPE html>
     <html>
     <head>
@@ -119,11 +118,10 @@ with col_board:
         <div id="board" style="width: 480px"></div>
         <script>
             var board = null;
-            var game = new Chess('{fen}');
+            var game = new Chess('__FEN__');
 
             function onDragStart (source, piece, position, orientation) {
                 if (game.game_over()) return false;
-                // Only pick up pieces for the side to move
                 if ((game.turn() === 'w' && piece.search(/^b/) !== -1) ||
                     (game.turn() === 'b' && piece.search(/^w/) !== -1)) {
                     return false;
@@ -131,16 +129,13 @@ with col_board:
             }
 
             function onDrop (source, target) {
-                // see if the move is legal
                 var move = game.move({
                     from: source,
                     to: target,
-                    promotion: 'q' // NOTE: auto-promote to queen for simplicity
+                    promotion: 'q'
                 });
 
                 if (move === null) return 'snapback';
-
-                // Send move back to Streamlit python backend via URL query parameter
                 window.parent.location.search = '?move=' + source + target;
             }
 
@@ -150,8 +145,8 @@ with col_board:
 
             var config = {
                 draggable: true,
-                position: '{fen}',
-                orientation: '{board_orientation}',
+                position: '__FEN__',
+                orientation: '__ORIENTATION__',
                 onDragStart: onDragStart,
                 onDrop: onDrop,
                 onSnapEnd: onSnapEnd
@@ -160,7 +155,8 @@ with col_board:
         </script>
     </body>
     </html>
-    """
+    """.replace("__FEN__", fen).replace("__ORIENTATION__", board_orientation)
+    
     components.html(chessboard_html, height=510)
 
 with col_panel:
