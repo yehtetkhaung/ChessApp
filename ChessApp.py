@@ -1,9 +1,9 @@
-import streamlit as st
+import os
+import html
 import chess
 import chess.pgn
+import streamlit as st
 import streamlit.components.v1 as components
-import html
-import json
 
 from ai_engine import get_best_move, evaluate_board
 
@@ -71,7 +71,19 @@ if "player_color" not in st.session_state:
 if "ai_error" not in st.session_state:
     st.session_state.ai_error = None
 
+if "last_move_nonce" not in st.session_state:
+    st.session_state.last_move_nonce = None
+
 board = st.session_state.board
+
+# =========================================================
+# CUSTOM COMPONENT
+# =========================================================
+
+_board_component = components.declare_component(
+    "chess_board_comp",
+    path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "chess_board_comp"),
+)
 
 # =========================================================
 # HELPER FUNCTIONS
@@ -80,13 +92,15 @@ board = st.session_state.board
 def reset_game():
     st.session_state.board = chess.Board()
     st.session_state.ai_error = None
+    st.session_state.last_move_nonce = None
     st.query_params.clear()
 
-def get_move_history(board):
+def get_move_history(board_obj):
+    """Generate SAN history directly from the actual game."""
     temp_board = chess.Board()
     history = []
 
-    for move in board.move_stack:
+    for move in board_obj.move_stack:
         san = temp_board.san(move)
         history.append(san)
         temp_board.push(move)
@@ -94,58 +108,41 @@ def get_move_history(board):
     return history
 
 def undo_turn():
-    board = st.session_state.board
+    """Undo the previous complete player/AI turn."""
+    current_board = st.session_state.board
 
-    if not board.move_stack:
+    if not current_board.move_stack:
         return
 
-    board.pop()
+    current_board.pop()
 
-    while board.move_stack and board.turn != st.session_state.player_color:
-        board.pop()
+    while current_board.move_stack and current_board.turn != st.session_state.player_color:
+        current_board.pop()
 
     st.session_state.ai_error = None
     st.query_params.clear()
 
-def get_status(board):
-    if board.is_checkmate():
-        winner = "Black" if board.turn == chess.WHITE else "White"
+def get_status(board_obj):
+    if board_obj.is_checkmate():
+        winner = "Black" if board_obj.turn == chess.WHITE else "White"
         return f"🏆 Checkmate! {winner} wins!"
 
-    if board.is_stalemate():
+    if board_obj.is_stalemate():
         return "🤝 Draw by stalemate!"
 
-    if board.is_insufficient_material():
+    if board_obj.is_insufficient_material():
         return "🤝 Draw by insufficient material!"
 
-    if board.is_fivefold_repetition():
+    if board_obj.is_fivefold repetition() if hasattr(board_obj, "is_fivefold repetition") else board_obj.is_fivefold_repetition():
         return "🤝 Draw by fivefold repetition!"
 
-    if board.is_seventyfive_moves():
+    if board_obj.is_seventyfive_moves():
         return "🤝 Draw by 75-move rule!"
 
-    if board.is_check():
+    if board_obj.is_check():
         return "⚠️ Check!"
 
     return "Game in progress"
-
-# =========================================================
-# RECEIVE PLAYER MOVE
-# =========================================================
-
-if "move" in st.query_params:
-    uci_move = st.query_params.get("move", "")
-
-    try:
-        move = chess.Move.from_uci(uci_move)
-        if move in board.legal_moves and board.turn == st.session_state.player_color:
-            board.push(move)
-            st.session_state.ai_error = None
-    except (ValueError, TypeError):
-        pass
-
-    st.query_params.clear()
-    st.rerun()
 
 # =========================================================
 # SIDEBAR
@@ -271,175 +268,33 @@ col_board, col_panel = st.columns([1.2, 0.9], gap="large")
 with col_board:
     st.subheader("Chessboard")
 
-    fen = board.fen()
     orientation = "white" if st.session_state.player_color == chess.WHITE else "black"
     player_turn_code = "w" if st.session_state.player_color == chess.WHITE else "b"
     can_move_now = (not board.is_game_over()) and (board.turn == st.session_state.player_color)
 
-    safe_fen = json.dumps(fen)
-    safe_orientation = json.dumps(orientation)
-    safe_player_turn = json.dumps(player_turn_code)
-    safe_can_move = json.dumps(can_move_now)
-
-    chessboard_html = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <link rel="stylesheet"
-              href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
-        <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-        <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
-        <style>
-            body {
-                margin: 0;
-                padding: 10px;
-                background: #161512;
-            }
-            #board-wrapper {
-                width: 100%;
-                max-width: 480px;
-                margin: auto;
-            }
-            #board {
-                width: 100%;
-            }
-        </style>
-    </head>
-    <body>
-        <div id="board-wrapper">
-            <div id="board"></div>
-        </div>
-
-        <script>
-            const initialFen = __FEN__;
-            const orientation = __ORIENTATION__;
-            const playerTurnCode = __PLAYER_TURN__;
-            const canMoveNow = __CAN_MOVE__;
-
-            const game = new Chess(initialFen);
-            let board = null;
-
-            const pieceTheme =
-                "https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png";
-
-            function sendMoveToStreamlit(uci) {
-                const targetUrl = new URL(window.parent.location.href);
-                targetUrl.searchParams.set("move", uci);
-
-                try {
-                    window.parent.location.assign(targetUrl.toString());
-                } catch (err) {
-                    try {
-                        window.top.location.href = targetUrl.toString();
-                    } catch (err2) {
-                        window.open(targetUrl.toString(), "_parent");
-                    }
-                }
-            }
-
-            function onDragStart(source, piece) {
-                if (!canMoveNow || game.game_over()) {
-                    return false;
-                }
-
-                // Only allow dragging your own pieces on your own turn
-                if (game.turn() !== playerTurnCode) {
-                    return false;
-                }
-
-                if (
-                    (playerTurnCode === "w" && piece.startsWith("b")) ||
-                    (playerTurnCode === "b" && piece.startsWith("w"))
-                ) {
-                    return false;
-                }
-            }
-
-            function onDrop(source, target) {
-                if (!canMoveNow) {
-                    return "snapback";
-                }
-
-                let promotion = "q";
-                const piece = game.get(source);
-
-                if (
-                    piece &&
-                    piece.type === "p" &&
-                    (target[1] === "8" || target[1] === "1")
-                ) {
-                    promotion = prompt(
-                        "Promote pawn to: q = Queen, r = Rook, b = Bishop, n = Knight",
-                        "q"
-                    );
-
-                    if (promotion === null) {
-                        return "snapback";
-                    }
-
-                    promotion = promotion.toLowerCase();
-
-                    if (!["q", "r", "b", "n"].includes(promotion)) {
-                        alert("Invalid promotion piece.");
-                        return "snapback";
-                    }
-                }
-
-                const move = game.move({
-                    from: source,
-                    to: target,
-                    promotion: promotion
-                });
-
-                if (move === null) {
-                    return "snapback";
-                }
-
-                const uci = source + target + (move.promotion || "");
-                sendMoveToStreamlit(uci);
-            }
-
-            function onSnapEnd() {
-                board.position(game.fen());
-            }
-
-            const config = {
-                draggable: canMoveNow,
-                position: initialFen,
-                orientation: orientation,
-                pieceTheme: pieceTheme,
-                onDragStart: onDragStart,
-                onDrop: onDrop,
-                onSnapEnd: onSnapEnd
-            };
-
-            board = Chessboard("board", config);
-
-            window.addEventListener("resize", function() {
-                if (board) {
-                    board.resize();
-                }
-            });
-        </script>
-    </body>
-    </html>
-    """
-
-    chessboard_html = (
-        chessboard_html
-        .replace("__FEN__", safe_fen)
-        .replace("__ORIENTATION__", safe_orientation)
-        .replace("__PLAYER_TURN__", safe_player_turn)
-        .replace("__CAN_MOVE__", safe_can_move)
+    move_payload = _board_component(
+        fen=board.fen(),
+        orientation=orientation,
+        player_turn=player_turn_code,
+        can_move=can_move_now,
+        key="chessboard_widget",
+        default=None,
     )
 
-    components.html(
-        chessboard_html,
-        height=510,
-        scrolling=False
-    )
+    if isinstance(move_payload, dict):
+        nonce = move_payload.get("nonce")
+        uci_move = move_payload.get("uci", "")
+
+        if nonce and nonce != st.session_state.last_move_nonce:
+            st.session_state.last_move_nonce = nonce
+            try:
+                move = chess.Move.from_uci(uci_move)
+                if move in board.legal_moves and board.turn == st.session_state.player_color:
+                    board.push(move)
+                    st.session_state.ai_error = None
+                    st.rerun()
+            except (ValueError, TypeError):
+                pass
 
 # =========================================================
 # RIGHT PANEL
