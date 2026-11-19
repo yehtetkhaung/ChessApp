@@ -1,187 +1,634 @@
+
 import streamlit as st
 import chess
 import chess.pgn
 import streamlit.components.v1 as components
+import html
+import json
+import io
+import time
+
 from ai_engine import get_best_move, evaluate_board
 
-st.set_page_config(page_title="Drag-and-Drop AI Chess", page_icon="♟️", layout="wide")
+# =========================================================
+# PAGE CONFIGURATION
+# =========================================================
 
-# Custom UI Styling
+st.set_page_config(
+    page_title="AI Chess Arena",
+    page_icon="♟️",
+    layout="wide"
+)
+
+# =========================================================
+# CUSTOM STYLING
+# =========================================================
+
 st.markdown("""
 <style>
-    .stApp { background-color: #161512; color: #f0f0f0; }
-    .eval-box {
-        padding: 10px 15px; border-radius: 8px; background-color: #262421;
-        border: 1px solid #3d3a35; text-align: center; font-weight: bold; margin-bottom: 10px;
+    .stApp {
+        background-color: #161512;
+        color: #f0f0f0;
     }
+
+    .eval-box {
+        padding: 15px;
+        border-radius: 10px;
+        background: #262421;
+        border: 1px solid #49453e;
+        text-align: center;
+        font-size: 20px;
+        font-weight: bold;
+        margin-bottom: 15px;
+    }
+
     .move-log {
-        background-color: #262421; padding: 12px; border-radius: 8px;
-        height: 320px; overflow-y: auto; font-family: monospace; font-size: 14px;
-        border: 1px solid #3d3a35;
+        background: #262421;
+        padding: 15px;
+        border-radius: 10px;
+        height: 320px;
+        overflow-y: auto;
+        font-family: monospace;
+        font-size: 14px;
+        line-height: 2;
+        border: 1px solid #49453e;
+    }
+
+    .stButton button {
+        border-radius: 8px;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Initialize session state
+# =========================================================
+# SESSION STATE
+# =========================================================
+
 if "board" not in st.session_state:
     st.session_state.board = chess.Board()
-if "move_history" not in st.session_state:
-    st.session_state.move_history = []
+
 if "player_color" not in st.session_state:
     st.session_state.player_color = chess.WHITE
 
-board: chess.Board = st.session_state.board
+if "ai_error" not in st.session_state:
+    st.session_state.ai_error = None
 
-# Check for incoming drag-and-drop move from URL params
-params = st.query_params
-if "move" in params:
-    uci_move = params["move"]
+board = st.session_state.board
+
+# =========================================================
+# HELPER FUNCTIONS
+# =========================================================
+
+def reset_game():
+    st.session_state.board = chess.Board()
+    st.session_state.ai_error = None
+    st.query_params.clear()
+
+def get_move_history(board):
+    """Generate SAN history directly from the actual game."""
+
+    temp_board = chess.Board()
+    history = []
+
+    for move in board.move_stack:
+        san = temp_board.san(move)
+        history.append(san)
+        temp_board.push(move)
+
+    return history
+
+def undo_turn():
+    """Undo the previous complete player/AI turn."""
+
+    board = st.session_state.board
+
+    if not board.move_stack:
+        return
+
+    # Remove at least one move.
+    board.pop()
+
+    # Continue until it is the human player's turn.
+    while board.move_stack and board.turn != st.session_state.player_color:
+        board.pop()
+
+    st.session_state.ai_error = None
+    st.query_params.clear()
+
+def get_status(board):
+    if board.is_checkmate():
+        winner = "Black" if board.turn == chess.WHITE else "White"
+        return f"🏆 Checkmate! {winner} wins!"
+
+    if board.is_stalemate():
+        return "🤝 Draw by stalemate!"
+
+    if board.is_insufficient_material():
+        return "🤝 Draw by insufficient material!"
+
+    if board.is_fivefold_repetition():
+        return "🤝 Draw by fivefold repetition!"
+
+    if board.is_seventyfive_moves():
+        return "🤝 Draw by 75-move rule!"
+
+    if board.is_check():
+        return "⚠️ Check!"
+
+    return "Game in progress"
+
+# =========================================================
+# RECEIVE PLAYER MOVE
+# =========================================================
+
+if "move" in st.query_params:
+
+    uci_move = st.query_params.get("move", "")
+
     try:
         move = chess.Move.from_uci(uci_move)
-        if move in board.legal_moves:
-            san = board.san(move)
-            board.push(move)
-            st.session_state.move_history.append(san)
-            st.query_params.clear()
-            st.rerun()
-    except Exception:
-        st.query_params.clear()
 
-# --- SIDEBAR CONTROLS ---
+        if move in board.legal_moves:
+            board.push(move)
+            st.session_state.ai_error = None
+
+    except (ValueError, TypeError):
+        pass
+
+    st.query_params.clear()
+    st.rerun()
+
+# =========================================================
+# SIDEBAR
+# =========================================================
+
 with st.sidebar:
+
     st.title("⚙️ Game Settings")
-    
-    side_choice = st.radio("Play As:", ["White", "Black"], index=0 if st.session_state.player_color == chess.WHITE else 1)
-    new_color = chess.WHITE if side_choice == "White" else chess.BLACK
+
+    st.subheader("Player Settings")
+
+    side_choice = st.radio(
+        "Play as:",
+        ["White", "Black"],
+        index=0 if st.session_state.player_color == chess.WHITE else 1
+    )
+
+    new_color = (
+        chess.WHITE if side_choice == "White"
+        else chess.BLACK
+    )
+
     if new_color != st.session_state.player_color:
         st.session_state.player_color = new_color
+        st.session_state.ai_error = None
         st.rerun()
 
+    st.divider()
+
+    st.subheader("AI Difficulty")
+
     difficulty = st.select_slider(
-        "AI Difficulty",
-        options=["Casual (Depth 2)", "Intermediate (Depth 3)", "Club Player (Depth 4)"],
+        "Choose difficulty",
+        options=[
+            "Casual (Depth 2)",
+            "Intermediate (Depth 3)",
+            "Club Player (Depth 4)"
+        ],
         value="Intermediate (Depth 3)"
     )
-    search_depth = {"Casual (Depth 2)": 2, "Intermediate (Depth 3)": 3, "Club Player (Depth 4)": 4}[difficulty]
+
+    search_depth = {
+        "Casual (Depth 2)": 2,
+        "Intermediate (Depth 3)": 3,
+        "Club Player (Depth 4)": 4
+    }[difficulty]
+
+    st.divider()
 
     col1, col2 = st.columns(2)
+
     with col1:
         if st.button("🔄 New Game", use_container_width=True):
-            st.session_state.board = chess.Board()
-            st.session_state.move_history = []
-            st.query_params.clear()
+            reset_game()
             st.rerun()
+
     with col2:
-        if st.button("↩️ Undo Move", use_container_width=True, disabled=len(board.move_stack) < 2):
-            board.pop()
-            board.pop()
-            if len(st.session_state.move_history) >= 2:
-                st.session_state.move_history = st.session_state.move_history[:-2]
-            st.query_params.clear()
+        if st.button(
+            "↩️ Undo",
+            use_container_width=True,
+            disabled=len(board.move_stack) == 0
+        ):
+            undo_turn()
             st.rerun()
 
     st.divider()
-    game_pgn = str(chess.pgn.Game.from_board(board))
-    st.download_button("📥 Download PGN", game_pgn, "chess_game.pgn", "text/plain", use_container_width=True)
 
-# --- TRIGGER AI MOVE IF IT'S AI's TURN ---
+    # PGN DOWNLOAD
+
+    game = chess.pgn.Game.from_board(board)
+
+    exporter = chess.pgn.StringExporter(
+        headers=True,
+        variations=True,
+        comments=True
+    )
+
+    pgn_text = game.accept(exporter)
+
+    st.download_button(
+        "📥 Download PGN",
+        data=pgn_text,
+        file_name="chess_game.pgn",
+        mime="application/x-chess-pgn",
+        use_container_width=True
+    )
+
+    st.divider()
+
+    st.caption("AI Chess Arena")
+    st.caption("Powered by Python Chess")
+
+# =========================================================
+# AI MOVE
+# =========================================================
+
 is_ai_turn = board.turn != st.session_state.player_color
+
 if not board.is_game_over() and is_ai_turn:
-    with st.spinner("🤖 AI is calculating best move..."):
-        ai_move = get_best_move(board, depth=search_depth)
-        if ai_move:
-            san = board.san(ai_move)
-            board.push(ai_move)
-            st.session_state.move_history.append(san)
+
+    with st.spinner("🤖 AI is calculating..."):
+
+        try:
+            ai_move = get_best_move(
+                board,
+                depth=search_depth
+            )
+
+            if ai_move is not None:
+
+                # Support either chess.Move or UCI string.
+                if isinstance(ai_move, str):
+                    ai_move = chess.Move.from_uci(ai_move)
+
+                # Never allow an illegal engine move.
+                if ai_move not in board.legal_moves:
+                    raise ValueError(
+                        "AI returned an illegal chess move."
+                    )
+
+                board.push(ai_move)
+
+            else:
+                raise RuntimeError(
+                    "AI engine did not return a move."
+                )
+
+            st.session_state.ai_error = None
             st.rerun()
 
-# --- MAIN LAYOUT ---
-st.title("♟️ Interactive Drag-and-Drop Chess AI")
+        except Exception as e:
+            st.session_state.ai_error = str(e)
 
-col_board, col_panel = st.columns([1.2, 1], gap="large")
+# =========================================================
+# MAIN INTERFACE
+# =========================================================
+
+st.title("♟️ AI Chess Arena")
+
+st.caption(
+    "Play chess against an AI opponent using drag-and-drop controls."
+)
+
+col_board, col_panel = st.columns(
+    [1.2, 0.9],
+    gap="large"
+)
+
+# =========================================================
+# CHESSBOARD
+# =========================================================
 
 with col_board:
+
+    st.subheader("Chessboard")
+
     fen = board.fen()
-    board_orientation = "white" if st.session_state.player_color == chess.WHITE else "black"
-    
-    # Use regular string with .replace() to avoid f-string curly brace collisions with JavaScript
+
+    orientation = (
+        "white"
+        if st.session_state.player_color == chess.WHITE
+        else "black"
+    )
+
+    # JSON encoding safely passes the FEN into JavaScript.
+    safe_fen = json.dumps(fen)
+
     chessboard_html = """
     <!DOCTYPE html>
     <html>
     <head>
-        <link rel="stylesheet" href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css" />
-        <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
-        <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
-    </head>
-    <body style="background-color: #161512; display: flex; justify-content: center;">
-        <div id="board" style="width: 480px"></div>
-        <script>
-            var board = null;
-            var game = new Chess('__FEN__');
 
-            function onDragStart (source, piece, position, orientation) {
-                if (game.game_over()) return false;
-                if ((game.turn() === 'w' && piece.search(/^b/) !== -1) ||
-                    (game.turn() === 'b' && piece.search(/^w/) !== -1)) {
+        <meta name="viewport"
+              content="width=device-width, initial-scale=1.0">
+
+        <link rel="stylesheet"
+              href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+
+        <script src="https://code.jquery.com/jquery-3.7.1.min.js">
+        </script>
+
+        <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js">
+        </script>
+
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js">
+        </script>
+
+        <style>
+
+            body {
+                margin: 0;
+                padding: 10px;
+                background: #161512;
+            }
+
+            #board-wrapper {
+                width: 100%;
+                max-width: 480px;
+                margin: auto;
+            }
+
+            #board {
+                width: 100%;
+            }
+
+        </style>
+
+    </head>
+
+    <body>
+
+        <div id="board-wrapper">
+            <div id="board"></div>
+        </div>
+
+        <script>
+
+            const initialFen = __FEN__;
+
+            const orientation = "__ORIENTATION__";
+
+            const game = new Chess(initialFen);
+
+            let board = null;
+
+            // Explicit chess-piece image source.
+            const pieceTheme =
+                "https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png";
+
+            // Prevent dragging the wrong color.
+            function onDragStart(source, piece) {
+
+                if (game.game_over()) {
                     return false;
                 }
+
+                if (
+                    (game.turn() === "w" && piece.startsWith("b")) ||
+                    (game.turn() === "b" && piece.startsWith("w"))
+                ) {
+                    return false;
+                }
+
             }
 
-            function onDrop (source, target) {
-                var move = game.move({
+            // Handle player moves.
+            function onDrop(source, target) {
+
+                let promotion = "q";
+
+                const piece = game.get(source);
+
+                // Ask which piece to promote to.
+                if (
+                    piece &&
+                    piece.type === "p" &&
+                    (target[1] === "8" || target[1] === "1")
+                ) {
+
+                    promotion = prompt(
+                        "Promote pawn to: q = Queen, r = Rook, b = Bishop, n = Knight",
+                        "q"
+                    );
+
+                    if (promotion === null) {
+                        return "snapback";
+                    }
+
+                    promotion = promotion.toLowerCase();
+
+                    if (!["q", "r", "b", "n"].includes(promotion)) {
+                        alert("Invalid promotion piece.");
+                        return "snapback";
+                    }
+
+                }
+
+                const move = game.move({
                     from: source,
                     to: target,
-                    promotion: 'q'
+                    promotion: promotion
                 });
 
-                if (move === null) return 'snapback';
-                window.parent.location.search = '?move=' + source + target;
+                if (move === null) {
+                    return "snapback";
+                }
+
+                // Send the complete UCI move to Streamlit.
+                const uci = source + target +
+                    (move.promotion || "");
+
+                window.parent.location.search =
+                    "?move=" + encodeURIComponent(uci);
+
             }
 
-            function onSnapEnd () {
+            function onSnapEnd() {
                 board.position(game.fen());
             }
 
-            var config = {
+            const config = {
+
                 draggable: true,
-                position: '__FEN__',
-                orientation: '__ORIENTATION__',
+
+                position: initialFen,
+
+                orientation: orientation,
+
+                pieceTheme: pieceTheme,
+
                 onDragStart: onDragStart,
+
                 onDrop: onDrop,
+
                 onSnapEnd: onSnapEnd
-            }
-            board = Chessboard('board', config);
+
+            };
+
+            board = Chessboard("board", config);
+
+            // Keep the board responsive.
+            window.addEventListener("resize", function() {
+                board.resize();
+            });
+
         </script>
+
     </body>
     </html>
-    """.replace("__FEN__", fen).replace("__ORIENTATION__", board_orientation)
-    
-    components.html(chessboard_html, height=510)
+    """
+
+    chessboard_html = (
+        chessboard_html
+        .replace("__FEN__", safe_fen)
+        .replace("__ORIENTATION__", orientation)
+    )
+
+    components.html(
+        chessboard_html,
+        height=510,
+        scrolling=False
+    )
+
+# =========================================================
+# RIGHT PANEL
+# =========================================================
 
 with col_panel:
-    raw_eval = evaluate_board(board) / 100.0
-    eval_text = f"+{raw_eval:.2f}" if raw_eval > 0 else f"{raw_eval:.2f}"
-    st.markdown(f'<div class="eval-box">Engine Evaluation: {eval_text}</div>', unsafe_allow_html=True)
+
+    st.subheader("Game Information")
+
+    # ENGINE EVALUATION
+
+    try:
+        raw_eval = evaluate_board(board) / 100.0
+
+        eval_text = (
+            f"+{raw_eval:.2f}"
+            if raw_eval > 0
+            else f"{raw_eval:.2f}"
+        )
+
+    except Exception:
+        eval_text = "Unavailable"
+
+    st.markdown(
+        f"""
+        <div class="eval-box">
+            Engine Evaluation: {eval_text}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # GAME STATUS
+
+    status = get_status(board)
 
     if board.is_checkmate():
-        winner = "Black" if board.turn == chess.WHITE else "White"
-        st.error(f"🏆 Checkmate! {winner} wins!")
-    elif board.is_stalemate():
-        st.warning("🤝 Draw by Stalemate!")
-    elif board.is_check():
-        st.warning("⚠️ Check!")
-    else:
-        status = "Your Turn" if not is_ai_turn else "AI is thinking..."
-        st.info(f"🎯 Status: {status}")
+        st.error(status)
 
-    st.subheader("📜 Move History")
-    history = st.session_state.move_history
+    elif board.is_game_over():
+        st.warning(status)
+
+    elif board.is_check():
+        st.warning(status)
+
+    elif st.session_state.ai_error:
+        st.error(
+            "AI Engine Error: " +
+            str(st.session_state.ai_error)
+        )
+
+    else:
+
+        if board.turn == st.session_state.player_color:
+            st.success("🎯 Your Turn")
+
+        else:
+            st.info("🤖 AI's Turn")
+
+    # BOARD INFORMATION
+
+    st.markdown("### Position Information")
+
+    st.write(
+        "Current turn:",
+        "White" if board.turn == chess.WHITE else "Black"
+    )
+
+    st.write(
+        "Move number:",
+        board.fullmove_number
+    )
+
+    st.write(
+        "Moves played:",
+        len(board.move_stack)
+    )
+
+    # MOVE HISTORY
+
+    st.markdown("### 📜 Move History")
+
+    history = get_move_history(board)
+
     rows = []
+
     for i in range(0, len(history), 2):
-        num = (i // 2) + 1
-        w = history[i]
-        b = history[i + 1] if i + 1 < len(history) else ""
-        rows.append(f"{num:>2}. {w:<8} {b}")
-    log_content = "<br>".join(rows) if rows else "<i>No moves played yet. Drag a piece to start!</i>"
-    st.markdown(f'<div class="move-log">{log_content}</div>', unsafe_allow_html=True)
+
+        move_number = (i // 2) + 1
+
+        white_move = history[i]
+
+        black_move = (
+            history[i + 1]
+            if i + 1 < len(history)
+            else ""
+        )
+
+        rows.append(
+            f"{move_number:>2}. {white_move:<9} {black_move}"
+        )
+
+    log_content = (
+        "<br>".join(html.escape(row) for row in rows)
+        if rows
+        else "<i>No moves played yet.</i>"
+    )
+
+    st.markdown(
+        f"""
+        <div class="move-log">
+            {log_content}
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # FEN DISPLAY
+
+    with st.expander("View FEN position"):
+
+        st.code(board.fen(), language="text")
+
+# =========================================================
+# FOOTER
+# =========================================================
+
+st.divider()
+
+st.caption(
+    "AI Chess Arena | Built with Streamlit, Python-Chess and JavaScript"
+)
