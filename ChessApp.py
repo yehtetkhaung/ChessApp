@@ -80,11 +80,13 @@ board = st.session_state.board
 # CUSTOM COMPONENT
 # =========================================================
 
+import sys
+
+_base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
 _board_component = components.declare_component(
     "chess_board_comp",
-    path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "chess_board_comp"),
+    path=os.path.join(_base, "chess_board_comp"),
 )
-
 # =========================================================
 # HELPER FUNCTIONS
 # =========================================================
