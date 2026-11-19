@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet"
+        href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css">
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 10px;
+      background: #161512;
+    }
+    #board-wrapper {
+      width: 100%;
+      max-width: 480px;
+      margin: auto;
+    }
+    #board {
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+  <div id="board-wrapper">
+    <div id="board"></div>
+  </div>
+
+  <script>
+    let board = null;
+    let game = null;
+    let canMoveNow = false;
+    let playerTurnCode = "w";
+
+    const pieceTheme =
+      "https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png";
+
+    function sendMessageToStreamlit(type, data) {
+      window.parent.postMessage(
+        Object.assign({ isStreamlitMessage: true, type: type }, data),
+        "*"
+      );
+    }
+
+    function setComponentValue(val) {
+      sendMessageToStreamlit("streamlit:setComponentValue", {
+        value: val,
+        dataType: "json"
+      });
+    }
+
+    function setFrameHeight(height) {
+      sendMessageToStreamlit("streamlit:setFrameHeight", { height: height });
+    }
+
+    function onDragStart(source, piece) {
+      if (!canMoveNow || !game || game.game_over()) {
+        return false;
+      }
+      if (game.turn() !== playerTurnCode) {
+        return false;
+      }
+      if (
+        (playerTurnCode === "w" && piece.startsWith("b")) ||
+        (playerTurnCode === "b" && piece.startsWith("w"))
+      ) {
+        return false;
+      }
+    }
+
+    function onDrop(source, target) {
+      if (!canMoveNow || !game) {
+        return "snapback";
+      }
+
+      let promotion = "q";
+      const piece = game.get(source);
+
+      if (
+        piece &&
+        piece.type === "p" &&
+        (target[1] === "8" || target[1] === "1")
+      ) {
+        promotion = prompt(
+          "Promote pawn to: q = Queen, r = Rook, b = Bishop, n = Knight",
+          "q"
+        );
+        if (promotion === null) {
+          return "snapback";
+        }
+        promotion = promotion.toLowerCase();
+        if (!["q", "r", "b", "n"].includes(promotion)) {
+          alert("Invalid promotion piece.");
+          return "snapback";
+        }
+      }
+
+      const move = game.move({
+        from: source,
+        to: target,
+        promotion: promotion
+      });
+
+      if (move === null) {
+        return "snapback";
+      }
+
+      canMoveNow = false;
+      const uci = source + target + (move.promotion || "");
+      setComponentValue({ uci: uci, nonce: Date.now() });
+    }
+
+    function onSnapEnd() {
+      if (board && game) {
+        board.position(game.fen());
+      }
+    }
+
+    function renderBoard(args) {
+      const fen = args.fen;
+      const orientation = args.orientation || "white";
+      playerTurnCode = args.player_turn || "w";
+      canMoveNow = Boolean(args.can_move);
+
+      game = new Chess(fen);
+
+      if (!board) {
+        board = Chessboard("board", {
+          draggable: canMoveNow,
+          position: fen,
+          orientation: orientation,
+          pieceTheme: pieceTheme,
+          onDragStart: onDragStart,
+          onDrop: onDrop,
+          onSnapEnd: onSnapEnd
+        });
+      } else {
+        board.orientation(orientation);
+        board.position(fen, false);
+      }
+
+      setFrameHeight(510);
+    }
+
+    window.addEventListener("message", function(event) {
+      if (event.data && event.data.type === "streamlit:render") {
+        renderBoard(event.data.args);
+      }
+    });
+
+    window.addEventListener("resize", function() {
+      if (board) {
+        board.resize();
+      }
+    });
+
+    sendMessageToStreamlit("streamlit:componentReady", { apiVersion: 1 });
+  </script>
+</body>
+</html>
