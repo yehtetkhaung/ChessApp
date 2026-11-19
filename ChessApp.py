@@ -133,7 +133,7 @@ def get_status(board_obj):
     if board_obj.is_insufficient_material():
         return "🤝 Draw by insufficient material!"
 
-    if board_obj.is_fivefold repetition() if hasattr(board_obj, "is_fivefold repetition") else board_obj.is_fivefold_repetition():
+    if board_obj.is_fivefold_repetition():
         return "🤝 Draw by fivefold repetition!"
 
     if board_obj.is_seventyfive_moves():
